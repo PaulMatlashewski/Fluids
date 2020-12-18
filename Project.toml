@@ -1,0 +1,4 @@
+name = "Fluids"
+uuid = "0a993776-d53c-43d6-8d89-589b755e22f7"
+authors = ["Paul Matlashewski <pmatlashewski@gmail.com>"]
+version = "0.1.0"

@@ -36,12 +36,12 @@ offset(a::FluidValue) = (a.ox, a.oy)
 # Interpolate fluid values
 (a::FluidValue)(i, j) = a.itp(i - a.oy, j - a.ox)
 
-# Set value at inside the given rectangular region to value v
+# Set value inside the given rectangular region to value v
 function add_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
-    x1 = round(Int, xlim[1]/a.hx - a.ox)
-    x2 = round(Int, xlim[2]/a.hx - a.ox)
-    y1 = round(Int, ylim[1]/a.hx - a.oy + 1)
-    y2 = round(Int, ylim[2]/a.hx - a.oy + 1)
+    x1 = round(Int, xlim[1]/a.hx - a.ox) + 1
+    x2 = round(Int, xlim[2]/a.hx - a.ox) + 1
+    y1 = round(Int, ylim[1]/a.hx - a.oy) + 1
+    y2 = round(Int, ylim[2]/a.hx - a.oy) + 1
     for j in max(x1, 1):min(x2, size(a)[1])
         for i in max(y1, 1):min(y2, size(a)[2])
             if abs(a[i, j]) < abs(v)

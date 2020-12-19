@@ -1,10 +1,9 @@
 using Base: @propagate_inbounds
 import Base: size, getindex, setindex!
 
-# Traits
 abstract type Interpolation end
 struct Linear <: Interpolation end
-struct Cubic <: Interpolation end
+struct Cubic  <: Interpolation end
 
 struct FluidValue{T<:Real,T2<:Interpolation} <: AbstractArray{T,2}
     src::Array{T,2}
@@ -80,7 +79,7 @@ function cubic_interp(x, a, b, c, d)
 end
 
 # Bilinear interpolation at real valued grid coordinate (i, j)
-function interp(a::FluidValue{T, Linear}, i, j) where {T}
+function linear_interp(a::FluidValue, i, j)
     i, j, grid_i, grid_j = locate(a, i, j)
 
     # Fluid value at 4 grid points of the cell
@@ -96,7 +95,7 @@ function interp(a::FluidValue{T, Linear}, i, j) where {T}
 end
 
 # Cubic interpolation of real valued grid coordinate (i, j)
-function interp(a::FluidValue{T, Cubic}, i, j) where {T}
+function cubic_interp(a::FluidValue, i, j)
     h, w = size(a)
     i, j, grid_i, grid_j = locate(a, i, j)
 
@@ -114,7 +113,12 @@ function interp(a::FluidValue{T, Cubic}, i, j) where {T}
 end
 
 # Interpolate fluid values
-(a::FluidValue)(i, j) = interp(a, i, j)
+(a::FluidValue{T, Linear})(i, j) where {T} = linear_interp(a, i, j)
+(a::FluidValue{T, Cubic})(i, j) where {T} = cubic_interp(a, i, j)
+
+function flip!(a::FluidValue)
+    a.src .= a.dst
+end
 
 # Set value inside the given rectangular region to value v
 function add_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
@@ -129,28 +133,4 @@ function add_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
             end
         end
     end
-end
-
-function euler!(dx, i, j, dt, hx, u::FluidValue, v::FluidValue)
-    dx[1] = i - v(i, j) / hx * dt
-    dx[2] = j - u(i, j) / hx * dt
-end
-
-function advect!(a::FluidValue, u::FluidValue, v::FluidValue, dt)
-    h, w = size(a)
-    ox, oy = offset(a)
-    hx = gridsize(a)
-    dx = [0.0, 0.0]
-    for j in 1:w
-        for i in 1:h
-            # Advect to new position
-            euler!(dx, i + oy, j + ox, dt, hx, u, v)
-            # Interpolate value
-            a.dst[i, j] = a(dx[1], dx[2])
-        end
-    end
-end
-
-function flip!(a::FluidValue)
-    a.src .= a.dst
 end

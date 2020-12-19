@@ -1,7 +1,11 @@
 import Base: size
 using FileIO, ImageMagick
 
-struct FluidSolver{T<:Real}
+abstract type Integrator end
+struct Euler <: Integrator end
+struct RK3   <: Integrator end
+
+struct FluidSolver{T<:Real, T2<:Integrator}
     # Fluid velocities
     d::FluidValue{T}
     u::FluidValue{T}
@@ -24,10 +28,11 @@ struct FluidSolver{T<:Real}
     tol::T
     tmax::T
     bc::T
+    alg::T2
 end
 
 function FluidSolver(height, width, rho::T, dt, maxiter, tol, tmax, bc;
-                     itp=Cubic()) where {T}
+                     itp=Cubic(), alg=RK3()) where {T}
     # Fluid data values
     d = FluidValue(zeros(T, height, width), itp, 0.5, 0.5)
 
@@ -40,11 +45,59 @@ function FluidSolver(height, width, rho::T, dt, maxiter, tol, tmax, bc;
     p = zeros(T, height, width)
 
     return FluidSolver(d, u, v, height, width, rho, r,
-                       p, dt, maxiter, tol, tmax, bc)
+                       p, dt, maxiter, tol, tmax, bc, alg)
 end
 
 Base.size(prob::FluidSolver) = (prob.h, prob.w)
 @inline gridsize(prob::FluidSolver) = 1.0 / min(prob.w, prob.h)
+
+# Forward Euler integration
+function euler!(dx, i, j, dt, hx, u::FluidValue, v::FluidValue)
+    dx[1] = i - v(i, j) / hx * dt
+    dx[2] = j - u(i, j) / hx * dt
+end
+
+# RungeKutta3 integration
+function rk3!(dx, i, j, dt, hx, u::FluidValue, v::FluidValue)
+    u1 = linear_interp(u, i, j) / hx
+    v1 = linear_interp(v, i, j) / hx
+
+    i1 = i - 0.5 * dt * v1
+    j1 = j - 0.5 * dt * u1
+
+    u2 = linear_interp(u, i1, j1) / hx
+    v2 = linear_interp(v, i1, j1) / hx
+
+    i2 = i - 0.75 * dt * v2
+    j2 = j - 0.75 * dt * u2
+
+    u3 = linear_interp(u, i2, j2)
+    v3 = linear_interp(v, i2, j2)
+
+    dx[1] = i - (2v1 + 3v2 + 4v3)*dt/9.0
+    dx[2] = j - (2u1 + 3u2 + 4u3)*dt/9.0
+end
+
+function integrate!(dx, i, j, hx, prob::FluidSolver{T, Euler}) where {T}
+    euler!(dx, i, j, prob.dt, hx, prob.u, prob.v)
+end
+
+function integrate!(dx, i, j, hx, prob::FluidSolver{T, RK3}) where {T}
+    rk3!(dx, i, j, prob.dt, hx, prob.u, prob.v)
+end
+
+function advect!(a::FluidValue, prob::FluidSolver)
+    h, w = size(a)
+    ox, oy = offset(a)
+    hx = gridsize(a)
+    dx = [0.0, 0.0]
+    for j in 1:w
+        for i in 1:h
+            integrate!(dx, i + oy, j + ox, hx, prob)
+            a.dst[i, j] = a(dx[1], dx[2])
+        end
+    end
+end
 
 function build_rhs!(prob::FluidSolver)
     # Velocity components
@@ -172,21 +225,22 @@ function max_dt(prob::FluidSolver)
 end
 
 function update!(prob::FluidSolver)
+    # Pressure step
     build_rhs!(prob)
     project!(prob)
     apply_pressure!(prob)
     apply_bc!(prob)
 
-    advect!(prob.d, prob.u, prob.v, prob.dt)
-    advect!(prob.u, prob.u, prob.v, prob.dt)
-    advect!(prob.v, prob.u, prob.v, prob.dt)
-
+    # Advection step
+    advect!(prob.d, prob::FluidSolver)
+    advect!(prob.u, prob::FluidSolver)
+    advect!(prob.v, prob::FluidSolver)
     flip!(prob.d)
     flip!(prob.u)
     flip!(prob.v)
 end
 
-function solve(prob::FluidSolver{T}, filename, fps) where {T}
+function solve(prob, filename, fps)
     d, u, v = prob.d, prob.u, prob.v
     ρ = prob.rho
 
@@ -195,7 +249,7 @@ function solve(prob::FluidSolver{T}, filename, fps) where {T}
     t = 0.0
     n = floor(Int, tmax / dt)
     h, w = size(prob)
-    data = zeros(T, h, w, n)
+    data = zeros(eltype(d), h, w, n)
 
     # Initialize animation
     data[:, :, 1] .= prob.d.src

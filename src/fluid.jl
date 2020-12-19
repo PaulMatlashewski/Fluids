@@ -1,9 +1,7 @@
-using Interpolations
-using Interpolations: Extrapolation
 using Base: @propagate_inbounds
 import Base: size, getindex, setindex!
 
-struct FluidValue{T<:Real, T_itp<:Extrapolation} <: AbstractArray{T,2}
+struct FluidValue{T<:Real} <: AbstractArray{T,2}
     src::Array{T,2}
     dst::Array{T,2}
 
@@ -13,16 +11,12 @@ struct FluidValue{T<:Real, T_itp<:Extrapolation} <: AbstractArray{T,2}
 
     # Cell grid size
     hx::T
-
-    # Interpolation object
-    itp::T_itp
 end
 
 function FluidValue(val::Array{T,2}, ox::T, oy::T, hx::T) where {T<:Real}
     height, width = size(val)
     dst = zeros(T, height, width)
-    itp = extrapolate(interpolate(val, BSpline(Linear())), Flat())
-    return FluidValue(val, dst, ox, oy, hx, itp)
+    return FluidValue(val, dst, ox, oy, hx)
 end
 
 # Array interface methods
@@ -33,8 +27,42 @@ Base.size(a::FluidValue) = size(a.src)
 gridsize(a::FluidValue) = a.hx
 offset(a::FluidValue) = (a.ox, a.oy)
 
+# Linear interpolation between a and b for x ∈ [0, 1]
+function linear_interp(x, a, b)
+    return a * (1.0 - x) + b * x
+end
+
+# Bilinear interpolation at real valued grid coordinate (i, j)
+function linear_interp(a::FluidValue, i, j)
+    dj, di = offset(a)
+    h, w = size(a)
+
+    # Clamp values to lie in index domain
+    i = min(max(i - di, 1.0), h - 0.001)
+    j = min(max(j - dj, 1.0), w - 0.001)
+
+    # Upper left grid point of cell containing point
+    grid_i = floor(Int, i)
+    grid_j = floor(Int, j)
+
+    # Fractional part ∈ [0, 1]
+    i -= grid_i
+    j -= grid_j
+
+    # Fluid value at 4 grid points of the cell
+    a1 = a[grid_i,     grid_j    ]
+    a2 = a[grid_i + 1, grid_j    ]
+    a3 = a[grid_i,     grid_j + 1]
+    a4 = a[grid_i + 1, grid_j + 1]
+
+    # Bilinear interpolation
+    i_interp_1 = linear_interp(i, a1, a2)
+    i_interp_2 = linear_interp(i, a3, a4)
+    return linear_interp(j, i_interp_1, i_interp_2)
+end
+
 # Interpolate fluid values
-(a::FluidValue)(i, j) = a.itp(i - a.oy, j - a.ox)
+(a::FluidValue)(i, j) = linear_interp(a, i, j)
 
 # Set value inside the given rectangular region to value v
 function add_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
@@ -46,8 +74,6 @@ function add_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
         for i in max(y1, 1):min(y2, size(a)[2])
             if abs(a[i, j]) < abs(v)
                 a[i, j] = v
-                # Update interpolation
-                a.itp.itp.coefs[i, j] = v
             end
         end
     end
@@ -75,9 +101,4 @@ end
 
 function flip!(a::FluidValue)
     a.src .= a.dst
-    update_interp!(a)
-end
-
-function update_interp!(a::FluidValue)
-    a.itp.itp.coefs .= a.src
 end

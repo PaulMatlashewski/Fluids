@@ -1,7 +1,7 @@
 module Fluids
 
 include("fluid.jl")
-export FluidValue, advect!, add_inflow!, flip!, euler!, update_interp!
+export FluidValue, advect!, add_inflow!, flip!, euler!
 
 include("solver.jl")
 export
@@ -9,5 +9,3 @@ export
     project!, apply_pressure!, apply_bc!, gridsize
 
 end # module
-
-# TODO: Interpolations is resulting in 0s

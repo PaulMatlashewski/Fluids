@@ -178,9 +178,6 @@ function update!(prob::FluidSolver)
     project!(prob)
     apply_pressure!(prob)
     apply_bc!(prob)
-    # Update interplation object after modifying velocity
-    update_interp!(prob.u)
-    update_interp!(prob.v)
 
     advect!(prob.d, prob.u, prob.v, prob.dt)
     advect!(prob.u, prob.u, prob.v, prob.dt)

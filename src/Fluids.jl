@@ -1,7 +1,7 @@
 module Fluids
 
 include("fluid.jl")
-export FluidValue, advect!, add_inflow!, flip!, euler!
+export FluidValue, advect!, add_inflow!, flip!, euler!, Linear, Cubic
 
 include("solver.jl")
 export

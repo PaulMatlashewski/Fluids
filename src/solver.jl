@@ -26,22 +26,20 @@ struct FluidSolver{T<:Real}
     bc::T
 end
 
-function FluidSolver(width, height, rho::T, dt, maxiter, tol, tmax, bc) where {T}
-    # Grid spacing
-    hx = 1.0 / min(width, height)
-
+function FluidSolver(height, width, rho::T, dt, maxiter, tol, tmax, bc;
+                     itp=Cubic()) where {T}
     # Fluid data values
-    d = FluidValue(zeros(T, height, width), 0.5, 0.5, hx)
+    d = FluidValue(zeros(T, height, width), itp, 0.5, 0.5)
 
     # Fluid velocity
-    u = FluidValue(zeros(T, height, width + 1), 0.0, 0.5, hx)
-    v = FluidValue(zeros(T, height + 1, width), 0.5, 0.0, hx)
+    u = FluidValue(zeros(T, height, width + 1), itp, 0.0, 0.5)
+    v = FluidValue(zeros(T, height + 1, width), itp, 0.5, 0.0)
 
     # Fluid pressure
     r = zeros(T, height, width)
     p = zeros(T, height, width)
 
-    return FluidSolver(d, u, v, width, height, rho, r,
+    return FluidSolver(d, u, v, height, width, rho, r,
                        p, dt, maxiter, tol, tmax, bc)
 end
 

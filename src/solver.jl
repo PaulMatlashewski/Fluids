@@ -263,9 +263,9 @@ function solve(prob, filename, fps)
         update!(prob)
         
         # Add inflow conditions
-        add_inflow!(d, [0.45, 0.55], [0.1, 0.11], 1.0)
-        add_inflow!(u, [0.45, 0.55], [0.1, 0.11], 0.0)
-        add_inflow!(v, [0.45, 0.55], [0.1, 0.11], 3.0)
+        add_smooth_inflow!(d, [0.45, 0.55], [0.1, 0.11], 1.0)
+        add_smooth_inflow!(u, [0.45, 0.55], [0.1, 0.11], 0.0)
+        add_smooth_inflow!(v, [0.45, 0.55], [0.1, 0.11], 3.0)
 
         # Save result
         data[:, :, k] .= prob.d.src

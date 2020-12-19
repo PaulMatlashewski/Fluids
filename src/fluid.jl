@@ -122,14 +122,46 @@ end
 
 # Set value inside the given rectangular region to value v
 function add_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
-    x1 = round(Int, xlim[1]/a.hx - a.ox) + 1
-    x2 = round(Int, xlim[2]/a.hx - a.ox) + 1
-    y1 = round(Int, ylim[1]/a.hx - a.oy) + 1
-    y2 = round(Int, ylim[2]/a.hx - a.oy) + 1
-    for j in max(x1, 1):min(x2, size(a)[1])
-        for i in max(y1, 1):min(y2, size(a)[2])
+    h, w = size(a)
+
+    j1 = round(Int, xlim[1]/a.hx - a.ox) + 1
+    j2 = round(Int, xlim[2]/a.hx - a.ox) + 1
+    i1 = round(Int, ylim[1]/a.hx - a.oy) + 1
+    i2 = round(Int, ylim[2]/a.hx - a.oy) + 1
+    for j in max(j1, 1):min(j2, size(a)[1])
+        for i in max(i1, 1):min(i2, size(a)[2])
             if abs(a[i, j]) < abs(v)
                 a[i, j] = v
+            end
+        end
+    end
+end
+
+# Set value inside the given rectangular region to value v
+function add_smooth_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
+    h, w = size(a)
+    hx = gridsize(a)
+
+    j1 = round(Int, xlim[1]/a.hx - a.ox) + 1
+    j2 = round(Int, xlim[2]/a.hx - a.ox) + 1
+    i1 = round(Int, ylim[1]/a.hx - a.oy) + 1
+    i2 = round(Int, ylim[2]/a.hx - a.oy) + 1
+
+    Lj = xlim[2] - xlim[1]
+    Li = ylim[2] - ylim[1]
+    Cj = xlim[2] + xlim[1]
+    Ci = ylim[2] + ylim[1]
+    for j in max(j1, 1):min(j2, size(a)[1])
+        for i in max(i1, 1):min(i2, size(a)[2])
+            # Cubic pulse shape
+            L = sqrt(
+                ((2hx*(i + 0.5) - Ci)/Li)^2 + 
+                ((2hx*(j + 0.5) - Cj)/Lj)^2
+            )
+            L = min(abs(L), 1.0)
+            vi = v * (1 - L^2 * (3 - 2L))
+            if abs(a[i, j]) < abs(vi)
+                a[i, j] = vi
             end
         end
     end

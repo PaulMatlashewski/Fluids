@@ -1,5 +1,6 @@
 import Base: size
 using FileIO, ImageMagick
+using LinearAlgebra, SparseArrays, SuiteSparse
 
 abstract type Integrator end
 struct Euler <: Integrator end
@@ -16,11 +17,12 @@ struct FluidSolver{T<:Real, T2<:Integrator}
     w::Int
 
     # Fluid density
-    rho::T
+    ρ::T
 
-    # Pressure variables
-    r::Array{T, 2} # Right hand side of pressure solve
-    p::Array{T, 2} # Pressure solution
+    # Cholesky factorization of pressure Laplacian matrix
+    A::SuiteSparse.CHOLMOD.Factor{T}
+    p::Array{T, 1} # Pressure solution
+    r::Array{T, 1} # Discrete divergence right hand side
 
     # Solver options
     dt::T
@@ -41,11 +43,32 @@ function FluidSolver(height, width, rho::T, dt, maxiter, tol, tmax, bc;
     v = FluidValue(zeros(T, height + 1, width), itp, 0.5, 0.0)
 
     # Fluid pressure
-    r = zeros(T, height, width)
-    p = zeros(T, height, width)
+    r = zeros(T, height * width)
+    p = zeros(T, height * width)
 
-    return FluidSolver(d, u, v, height, width, rho, r,
-                       p, dt, maxiter, tol, tmax, bc, alg)
+    # Laplacian matrix for pressure
+    L = ∇²(height, width)
+    # Prefactor using Cholesky decomposition
+    println("Performing Cholesky decomposition")
+    A = cholesky(L)
+
+    return FluidSolver(d, u, v, height, width, rho, A, p, r,
+                       dt, maxiter, tol, tmax, bc, alg)
+end
+
+function spdiagm_nonsquare(m, n, args...)
+    I, J, V = SparseArrays.spdiagm_internal(args...)
+    return sparse(I, J, V, m, n)
+end
+
+# returns -∇² (discrete Laplacian, real-symmetric positive-definite)
+# on n₁×n₂ grid
+function ∇²(n₁, n₂)
+    o₁ = ones(n₁)
+    ∂₁ = spdiagm_nonsquare(n₁+1,n₁,-1=>-o₁,0=>o₁)
+    o₂ = ones(n₂)
+    ∂₂ = spdiagm_nonsquare(n₂+1,n₂,-1=>-o₂,0=>o₂)
+    return kron(sparse(I,n₂,n₂), ∂₁'*∂₁) + kron(∂₂'*∂₂, sparse(I,n₁,n₁))
 end
 
 Base.size(prob::FluidSolver) = (prob.h, prob.w)
@@ -104,75 +127,28 @@ function build_rhs!(prob::FluidSolver)
     u = prob.u
     v = prob.v
     
-    scale = 1.0 / gridsize(prob)
+    # Incorporate Laplacian weights in the right hand side
+    hx = gridsize(prob)
+    dt = prob.dt
+    ρ = prob.ρ
+    scale = ρ * hx / dt
     h, w = size(prob)
 
-    # Right hand side of pressure solve
     r = prob.r
-    
+    k = 1
     for j in 1:w
         for i in 1:h
             # Negative divergence of the velocity
-            r[i, j] = -scale * (u[i, j+1] - u[i, j] + v[i+1, j] - v[i, j])
+            r[k] = -scale * (u[i, j+1] - u[i, j] + v[i+1, j] - v[i, j])
+            k += 1
         end
     end
-end
-
-# Perform the pressure solve using Gauss-Seidel
-function project!(prob::FluidSolver)
-    p, r = prob.p, prob.r
-    rho = prob.rho
-
-    hx = gridsize(prob)
-    dt = prob.dt
-    maxiter = prob.maxiter
-    scale = dt / (rho * hx^2)
-    h, w = size(prob)
-
-    max_delta = 0.0
-    for k in 1:maxiter
-        max_delta = 0.0
-        for j in 1:w
-            for i in 1:h
-                diag = 0.0
-                off_diag = 0.0
-                
-                # Build the matrix implicitly as the five point stencil
-                # Grid borders are assumed to be solid (no fluid outside
-                # the simulation domain)
-                if i > 1
-                    diag += scale
-                    off_diag -= scale * p[i - 1, j]
-                end
-                if j > 1
-                    diag += scale
-                    off_diag -= scale * p[i, j - 1]
-                end
-                if i < h
-                    diag += scale
-                    off_diag -= scale * p[i + 1, j]
-                end
-                if j < w
-                    diag += scale
-                    off_diag -= scale * p[i, j + 1]
-                end
-                new_p = (r[i, j] - off_diag) / diag
-                max_delta = max(max_delta, abs(p[i, j] - new_p))
-                p[i, j] = new_p
-            end
-        end
-        if max_delta < prob.tol
-            println("    Exiting solver after $(k) iterations, res = $(max_delta)")
-            return
-        end
-    end
-    println("    Exceeded maxiter $(maxiter), res = $(max_delta)")
 end
 
 # Apply the computed pressure to the velocity field
 function apply_pressure!(prob::FluidSolver)
     u, v = prob.u, prob.v
-    rho = prob.rho
+    rho = prob.ρ
     p = prob.p
     dt = prob.dt
 
@@ -180,12 +156,14 @@ function apply_pressure!(prob::FluidSolver)
     scale = dt / (rho * hx)
     h, w = size(prob)
 
+    k = 1
     for j in 1:w
         for i in 1:h
-            u[i, j] -= scale * p[i, j]
-            v[i, j] -= scale * p[i, j]
-            u[i, j + 1] += scale * p[i, j]
-            v[i + 1, j] += scale * p[i, j]
+            u[i, j] -= scale * p[k]
+            v[i, j] -= scale * p[k]
+            u[i, j + 1] += scale * p[k]
+            v[i + 1, j] += scale * p[k]
+            k += 1
         end
     end
 end
@@ -227,7 +205,7 @@ end
 function update!(prob::FluidSolver)
     # Pressure step
     build_rhs!(prob)
-    project!(prob)
+    copyto!(prob.p, prob.A \ prob.r)
     apply_pressure!(prob)
     apply_bc!(prob)
 
@@ -242,7 +220,6 @@ end
 
 function solve(prob, filename, fps)
     d, u, v = prob.d, prob.u, prob.v
-    ρ = prob.rho
 
     dt = prob.dt
     tmax = prob.tmax
@@ -251,24 +228,22 @@ function solve(prob, filename, fps)
     h, w = size(prob)
     data = zeros(eltype(d), h, w, n)
 
-    # Initialize animation
-    data[:, :, 1] .= prob.d.src
-
     dt = prob.dt
     tmax = prob.tmax
     t = 0.0
-    for k in 2:n
-        t += dt
+    for k in 1:n    
+        # Add inflow conditions
+        add_smooth_inflow!(d, [0.4, 0.6], [0.1, 0.13], 1.0)
+        add_smooth_inflow!(u, [0.4, 0.6], [0.1, 0.13], 0.0)
+        add_smooth_inflow!(v, [0.4, 0.6], [0.1, 0.13], 3.0)
+
         println("Solving time t: $(t)")
         update!(prob)
-        
-        # Add inflow conditions
-        add_smooth_inflow!(d, [0.45, 0.55], [0.1, 0.11], 1.0)
-        add_smooth_inflow!(u, [0.45, 0.55], [0.1, 0.11], 0.0)
-        add_smooth_inflow!(v, [0.45, 0.55], [0.1, 0.11], 3.0)
 
         # Save result
         data[:, :, k] .= prob.d.src
+
+        t += dt
     end
     save(filename, data; fps=fps)
 end

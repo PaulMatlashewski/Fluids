@@ -1,6 +1,7 @@
 import Base: size
 using FileIO, ImageMagick
 using LinearAlgebra, SparseArrays, SuiteSparse
+using Formatting, TimerOutputs
 
 abstract type Integrator end
 struct Euler <: Integrator end
@@ -171,7 +172,7 @@ end
 function apply_bc!(prob::FluidSolver)
     u, v = prob.u, prob.v
     bc = prob.bc
-    w, h = size(prob)
+    h, w = size(prob)
     for i in 1:h
         u[i, 1] = bc
         u[i, w] = bc
@@ -202,23 +203,26 @@ function max_dt(prob::FluidSolver)
     return min(dt, 1.0) # Clamp to a resonable value for small velocities
 end
 
-function update!(prob::FluidSolver)
+function update!(prob::FluidSolver, to)
     # Pressure step
-    build_rhs!(prob)
-    copyto!(prob.p, prob.A \ prob.r)
-    apply_pressure!(prob)
-    apply_bc!(prob)
+    @timeit to "Assemble Velocity Divergence" build_rhs!(prob)
+    @timeit to "Solve Pressure" copyto!(prob.p, prob.A \ prob.r)
+    @timeit to "Apply Pressure" apply_pressure!(prob)
+    @timeit to "Apply BCs" apply_bc!(prob)
 
     # Advection step
-    advect!(prob.d, prob::FluidSolver)
-    advect!(prob.u, prob::FluidSolver)
-    advect!(prob.v, prob::FluidSolver)
-    flip!(prob.d)
-    flip!(prob.u)
-    flip!(prob.v)
+    @timeit to "Advection" begin
+        advect!(prob.d, prob::FluidSolver)
+        advect!(prob.u, prob::FluidSolver)
+        advect!(prob.v, prob::FluidSolver)
+        flip!(prob.d)
+        flip!(prob.u)
+        flip!(prob.v)
+    end
 end
 
 function solve(prob, filename, fps)
+    to = TimerOutput()
     d, u, v = prob.d, prob.u, prob.v
 
     dt = prob.dt
@@ -237,8 +241,8 @@ function solve(prob, filename, fps)
         add_smooth_inflow!(u, [0.4, 0.6], [0.1, 0.13], 0.0)
         add_smooth_inflow!(v, [0.4, 0.6], [0.1, 0.13], 3.0)
 
-        println("Solving time t: $(t)")
-        update!(prob)
+        printfmtln("Solving time t: {:.3f}", t)
+        update!(prob, to)
 
         # Save result
         data[:, :, k] .= prob.d.src
@@ -246,4 +250,5 @@ function solve(prob, filename, fps)
         t += dt
     end
     save(filename, data; fps=fps)
+    show(to)
 end

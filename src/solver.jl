@@ -249,6 +249,7 @@ function solve(prob, filename, fps)
 
         t += dt
     end
-    save(filename, data; fps=fps)
     show(to)
+    println("Saving gif")
+    save(filename, data; fps=fps)
 end

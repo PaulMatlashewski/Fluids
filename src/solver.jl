@@ -7,34 +7,32 @@ abstract type Integrator end
 struct Euler <: Integrator end
 struct RK3   <: Integrator end
 
-struct FluidSolver{T<:Real, T2<:Integrator}
+struct FluidSolver{T1<:Real, T2<:Interpolation, T3<:Integrator}
     # Fluid velocities
-    d::FluidValue{T}
-    u::FluidValue{T}
-    v::FluidValue{T}
+    d::FluidValue{T1,T2}
+    u::FluidValue{T1,T2}
+    v::FluidValue{T1,T2}
 
     # Grid size
     h::Int
     w::Int
 
     # Fluid density
-    ρ::T
+    ρ::T1
 
     # Cholesky factorization of pressure Laplacian matrix
-    A::SuiteSparse.CHOLMOD.Factor{T}
-    p::Array{T, 1} # Pressure solution
-    r::Array{T, 1} # Discrete divergence right hand side
+    A::SuiteSparse.CHOLMOD.Factor{T1}
+    p::Array{T1, 1} # Pressure solution
+    r::Array{T1, 1} # Discrete divergence right hand side
 
     # Solver options
-    dt::T
-    maxiter::Int
-    tol::T
-    tmax::T
-    bc::T
-    alg::T2
+    dt::T1
+    tmax::T1
+    bc::T1
+    alg::T3
 end
 
-function FluidSolver(height, width, rho::T, dt, maxiter, tol, tmax, bc;
+function FluidSolver(height, width, rho::T, dt, tmax, bc;
                      itp=Cubic(), alg=RK3()) where {T}
     # Fluid data values
     d = FluidValue(zeros(T, height, width), itp, 0.5, 0.5)
@@ -53,8 +51,7 @@ function FluidSolver(height, width, rho::T, dt, maxiter, tol, tmax, bc;
     println("Performing Cholesky decomposition")
     A = cholesky(L)
 
-    return FluidSolver(d, u, v, height, width, rho, A, p, r,
-                       dt, maxiter, tol, tmax, bc, alg)
+    return FluidSolver(d, u, v, height, width, rho, A, p, r, dt, tmax, bc, alg)
 end
 
 function spdiagm_nonsquare(m, n, args...)
@@ -75,14 +72,34 @@ end
 Base.size(prob::FluidSolver) = (prob.h, prob.w)
 @inline gridsize(prob::FluidSolver) = 1.0 / min(prob.w, prob.h)
 
-# Forward Euler integration
-function euler!(dx, i, j, dt, hx, u::FluidValue, v::FluidValue)
-    dx[1] = i - v(i, j) / hx * dt
-    dx[2] = j - u(i, j) / hx * dt
+# Euler integration
+function euler!(a, grid_i, grid_j, prob)
+    u = prob.u
+    v = prob.v
+    ox, oy = offset(a)
+    hx = gridsize(a)
+    dt = prob.dt
+
+    i = grid_i + oy
+    j = grid_j + ox
+
+    i1 = linear_interp(v, i, j) / hx * dt
+    j1 = linear_interp(u, i, j) / hx * dt
+
+    a.dst[grid_i, grid_j] = a(i - i1, j - j1)
 end
 
 # RungeKutta3 integration
-function rk3!(dx, i, j, dt, hx, u::FluidValue, v::FluidValue)
+function rk3!(a, grid_i, grid_j, prob)
+    u = prob.u
+    v = prob.v
+    ox, oy = offset(a)
+    hx = gridsize(a)
+    dt = prob.dt
+
+    i = grid_i + oy
+    j = grid_j + ox
+
     u1 = linear_interp(u, i, j) / hx
     v1 = linear_interp(v, i, j) / hx
 
@@ -98,27 +115,25 @@ function rk3!(dx, i, j, dt, hx, u::FluidValue, v::FluidValue)
     u3 = linear_interp(u, i2, j2)
     v3 = linear_interp(v, i2, j2)
 
-    dx[1] = i - (2v1 + 3v2 + 4v3)*dt/9.0
-    dx[2] = j - (2u1 + 3u2 + 4u3)*dt/9.0
+    i3 = i - (2v1 + 3v2 + 4v3)*dt/9.0
+    j3 = j - (2u1 + 3u2 + 4u3)*dt/9.0
+
+    a.dst[grid_i, grid_j] = a(i3, j3)
 end
 
-function integrate!(dx, i, j, hx, prob::FluidSolver{T, Euler}) where {T}
-    euler!(dx, i, j, prob.dt, hx, prob.u, prob.v)
+function integrate!(a, i, j, prob::FluidSolver{T1, T2, Euler}) where {T1, T2}
+    euler!(a, i, j, prob)
 end
 
-function integrate!(dx, i, j, hx, prob::FluidSolver{T, RK3}) where {T}
-    rk3!(dx, i, j, prob.dt, hx, prob.u, prob.v)
+function integrate!(a, i, j, prob::FluidSolver{T1, T2, RK3}) where {T1, T2}
+    rk3!(a, i, j, prob)
 end
 
 function advect!(a::FluidValue, prob::FluidSolver)
     h, w = size(a)
-    ox, oy = offset(a)
-    hx = gridsize(a)
-    dx = [0.0, 0.0]
     for j in 1:w
         for i in 1:h
-            integrate!(dx, i + oy, j + ox, hx, prob)
-            a.dst[i, j] = a(dx[1], dx[2])
+            integrate!(a, i, j, prob)
         end
     end
 end

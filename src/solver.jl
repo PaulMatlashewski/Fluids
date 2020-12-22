@@ -8,10 +8,16 @@ struct Euler <: Integrator end
 struct RK3   <: Integrator end
 
 struct FluidSolver{T1<:Real, T2<:Interpolation, T3<:Integrator}
-    # Fluid velocities
+    # Fluid data
     d::FluidValue{T1,T2}
+
+    # Fluid velocity
     u::FluidValue{T1,T2}
     v::FluidValue{T1,T2}
+
+    # Fluid forces
+    fi::FluidValue{T1,T2}
+    fj::FluidValue{T1,T2}
 
     # Grid size
     h::Int
@@ -34,12 +40,16 @@ end
 
 function FluidSolver(height, width, rho::T, dt, tmax, bc;
                      itp=Cubic(), alg=RK3()) where {T}
-    # Fluid data values
+    # Fluid marker
     d = FluidValue(zeros(T, height, width), itp, 0.5, 0.5)
 
     # Fluid velocity
-    u = FluidValue(zeros(T, height, width + 1), itp, 0.0, 0.5)
-    v = FluidValue(zeros(T, height + 1, width), itp, 0.5, 0.0)
+    u = FluidValue(zeros(T, height + 1, width + 1), itp, 0.0, 0.5)
+    v = FluidValue(zeros(T, height + 1, width + 1), itp, 0.5, 0.0)
+
+    # Fluid forces
+    fi = FluidValue(zeros(T, height, width), itp, 0.5, 0.5)
+    fj = FluidValue(zeros(T, height, width), itp, 0.5, 0.5)
 
     # Fluid pressure
     r = zeros(T, height * width)
@@ -51,7 +61,7 @@ function FluidSolver(height, width, rho::T, dt, tmax, bc;
     println("Performing Cholesky decomposition")
     A = cholesky(L)
 
-    return FluidSolver(d, u, v, height, width, rho, A, p, r, dt, tmax, bc, alg)
+    return FluidSolver(d, u, v, fi, fj, height, width, rho, A, p, r, dt, tmax, bc, alg)
 end
 
 function spdiagm_nonsquare(m, n, args...)
@@ -184,16 +194,68 @@ function apply_pressure!(prob::FluidSolver)
     end
 end
 
-function apply_bc!(prob::FluidSolver)
+function vorticity(prob, i, j)
+    u, v = prob.u, prob.v
+    hx = gridsize(prob)
+    return (v[i, j+1] - v[i, j] - u[i+1, j] + u[i, j]) / 2hx
+end
+
+# Calculate forces at cell centers for vorticity confinement
+function vorticity_confinement!(prob, ϵ)
+    u, v = prob.u, prob.v
+    fi, fj = prob.fi, prob.fj
+    h, w = size(prob)
+    dt = prob.dt
+    hx = gridsize(prob)
+    for j in 1:w-1
+        for i in 1:h-1
+            ω = vorticity(prob, i, j)
+            ωi = vorticity(prob, i+1, j)
+            ωj = vorticity(prob, i, j+1)
+
+            # Vector pointing to local vortex: N = ∇ω / |∇ω|
+            ∂ωi = (abs(ωi) - abs(ω)) / 2hx
+            ∂ωj = (abs(ωj) - abs(ω)) / 2hx
+            L = sqrt(∂ωi^2 + ∂ωj^2) + (1e-20/hx/dt) # Prevent divide by 0
+
+            # Force to increase vorticity: f = (ω × N)dt
+            fi[i, j] -= ϵ * dt * (ω * ∂ωj/L)
+            fj[i, j] += ϵ * dt * (ω * ∂ωi/L)
+        end
+    end
+end
+
+# Apply body forces to velocity
+function apply_bodyforces!(prob)
+    u, v = prob.u, prob.v
+    fi, fj = prob.fi, prob.fj
+    h, w = size(prob)
+    for j in 1:w
+        for i in 1:h
+            u[i, j] += 0.5 * fj[i, j]
+            v[i, j] += 0.5 * fi[i, j]
+            u[i, j + 1] += 0.5 * fj[i, j]
+            v[i + 1, j] += 0.5 * fj[i, j]
+        end
+    end
+end
+
+function apply_bc!(prob)
     u, v = prob.u, prob.v
     bc = prob.bc
     h, w = size(prob)
-    for i in 1:h
+    for i in 1:h+1
         u[i, 1] = bc
         u[i, w] = bc
         u[i, w + 1] = bc
+        v[i, 1] = bc
+        v[i, w] = bc
+        v[i, w + 1] = bc
     end
-    for j in 1:w
+    for j in 1:w+1
+        u[1, j] = bc
+        u[h, j] = bc
+        u[h + 1, j] = bc
         v[1, j] = bc
         v[h, j] = bc
         v[h + 1, j] = bc
@@ -201,7 +263,7 @@ function apply_bc!(prob::FluidSolver)
 end
 
 # CFL condition for maximum timestep
-function max_dt(prob::FluidSolver)
+function max_dt(prob)
     w, h = size(prob)
     hx = gridsize(prob)
     # Maximum velocity at center of grid
@@ -218,7 +280,7 @@ function max_dt(prob::FluidSolver)
     return min(dt, 1.0) # Clamp to a resonable value for small velocities
 end
 
-function update!(prob::FluidSolver, to)
+function update!(prob, to)
     # Pressure step
     @timeit to "Assemble Velocity Divergence" build_rhs!(prob)
     @timeit to "Solve Pressure" copyto!(prob.p, prob.A \ prob.r)
@@ -227,12 +289,20 @@ function update!(prob::FluidSolver, to)
 
     # Advection step
     @timeit to "Advection" begin
-        advect!(prob.d, prob::FluidSolver)
-        advect!(prob.u, prob::FluidSolver)
-        advect!(prob.v, prob::FluidSolver)
+        advect!(prob.d, prob)
+        advect!(prob.u, prob)
+        advect!(prob.v, prob)
         flip!(prob.d)
         flip!(prob.u)
         flip!(prob.v)
+    end
+
+    # Body force step
+    @timeit to "Vorticity Confinement" begin
+        vorticity_confinement!(prob, 0.1)
+        apply_bodyforces!(prob)
+        fill!(prob.fi, 0.0)
+        fill!(prob.fj, 0.0)
     end
 end
 
@@ -252,9 +322,9 @@ function solve(prob, filename, fps)
     t = 0.0
     for k in 1:n    
         # Add inflow conditions
-        add_smooth_inflow!(d, [0.4, 0.6], [0.1, 0.13], 1.0)
-        add_smooth_inflow!(u, [0.4, 0.6], [0.1, 0.13], 0.0)
-        add_smooth_inflow!(v, [0.4, 0.6], [0.1, 0.13], 3.0)
+        add_inflow!(d, [0.45, 0.55], [0.0, 0.01], 1.0)
+        add_inflow!(u, [0.45, 0.55], [0.0, 0.01], 0.0)
+        add_inflow!(v, [0.45, 0.55], [0.0, 0.01], 3.0)
 
         printfmtln("Solving time t: {:.3f}", t)
         update!(prob, to)
@@ -264,7 +334,7 @@ function solve(prob, filename, fps)
 
         t += dt
     end
-    show(to)
+    println(to)
     println("Saving gif")
     save(filename, data; fps=fps)
 end

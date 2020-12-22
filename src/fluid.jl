@@ -123,11 +123,12 @@ end
 # Set value inside the given rectangular region to value v
 function add_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
     h, w = size(a)
-
-    j1 = round(Int, xlim[1]/a.hx - a.ox) + 1
-    j2 = round(Int, xlim[2]/a.hx - a.ox) + 1
-    i1 = round(Int, ylim[1]/a.hx - a.oy) + 1
-    i2 = round(Int, ylim[2]/a.hx - a.oy) + 1
+    hh = 1.0 / h
+    hw = 1.0 / w
+    j1 = round(Int, xlim[1]/hw - a.ox) + 1
+    j2 = round(Int, xlim[2]/hw - a.ox) + 1
+    i1 = round(Int, ylim[1]/hh - a.oy) + 1
+    i2 = round(Int, ylim[2]/hh - a.oy) + 1
     for j in max(j1, 1):min(j2, size(a)[1])
         for i in max(i1, 1):min(i2, size(a)[2])
             if abs(a[i, j]) < abs(v)

@@ -36,6 +36,8 @@ Base.size(a::FluidValue) = size(a.src)
 gridsize(a::FluidValue) = a.hx
 offset(a::FluidValue) = (a.ox, a.oy)
 
+# Find the grid cell corresponding to point (i, j),
+# and return the fractional distance into the cell.
 function locate(a, i, j)
     dj, di = offset(a)
     h, w = size(a)
@@ -65,7 +67,7 @@ function cubic_interp(x, a, b, c, d)
     xs = x^2
     xc = x^3
 
-    # Clamp values to prevent blow up
+    # Clamp values to limit over and undershoot
     min_val = min(a, min(b, min(c, d)))
     max_val = max(a, max(b, max(c, d)))
 
@@ -103,13 +105,25 @@ function cubic_interp(a::FluidValue, i, j)
     i1, i2, i3, i4 = max(grid_i - 1, 1), grid_i, grid_i + 1, min(grid_i + 2, h)
     j1, j2, j3, j4 = max(grid_j - 1, 1), grid_j, grid_j + 1, min(grid_j + 2, w)
 
-    # Fluid value at interpolation points
-    a1 = cubic_interp(i, a[i1, j1], a[i2, j1], a[i3, j1], a[i4, j1])
-    a2 = cubic_interp(i, a[i1, j2], a[i2, j2], a[i3, j2], a[i4, j2])
-    a3 = cubic_interp(i, a[i1, j3], a[i2, j3], a[i3, j3], a[i4, j3])
-    a4 = cubic_interp(i, a[i1, j4], a[i2, j4], a[i3, j4], a[i4, j4])
+    # Cubic interpolation weights in i direction
+    wi1 = -(1/3)i + 0.5i^2 - (1/6)i^3
+    wi2 = 1.0 - 0.5i - i^2 + 0.5i^3
+    wi3 = i + 0.5i^2 - 0.5i^3
+    wi4 = -(1/6)i + (1/6)i^3
 
-    return cubic_interp(j, a1, a2, a3, a4)
+    # Cubic interpolation weights in j direction
+    wj1 = -(1/3)j + 0.5j^2 - (1/6)j^3
+    wj2 = 1.0 - 0.5j - j^2 + 0.5j^3
+    wj3 = j + 0.5j^2 - 0.5j^3
+    wj4 = -(1/6)j + (1/6)j^3
+
+    # Fluid value at interpolation points
+    a1 = wi1*a[i1, j1] + wi2*a[i2, j1] + wi3*a[i3, j1] + wi4*a[i4, j1]
+    a2 = wi1*a[i1, j2] + wi2*a[i2, j2] + wi3*a[i3, j2] + wi4*a[i4, j2]
+    a3 = wi1*a[i1, j3] + wi2*a[i2, j3] + wi3*a[i3, j3] + wi4*a[i4, j3]
+    a4 = wi1*a[i1, j4] + wi2*a[i2, j4] + wi3*a[i3, j4] + wi4*a[i4, j4]
+
+    return wj1*a1 + wj2*a2 + wj3*a3 + wj4*a4
 end
 
 # Interpolate fluid values
@@ -121,10 +135,11 @@ function flip!(a::FluidValue)
 end
 
 # Set value inside the given rectangular region to value v
-function add_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
-    h, w = size(a)
+function add_inflow!(a, prob, xlim, ylim, v)
+    h, w = size(prob)
     hh = 1.0 / h
     hw = 1.0 / w
+    hx = gridsize(prob)
     j1 = round(Int, xlim[1]/hw - a.ox) + 1
     j2 = round(Int, xlim[2]/hw - a.ox) + 1
     i1 = round(Int, ylim[1]/hh - a.oy) + 1
@@ -139,21 +154,22 @@ function add_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
 end
 
 # Set value inside the given rectangular region to value v
-function add_smooth_inflow!(a::FluidValue{T}, xlim, ylim, v::T) where {T}
-    h, w = size(a)
-    hx = gridsize(a)
-
-    j1 = round(Int, xlim[1]/a.hx - a.ox) + 1
-    j2 = round(Int, xlim[2]/a.hx - a.ox) + 1
-    i1 = round(Int, ylim[1]/a.hx - a.oy) + 1
-    i2 = round(Int, ylim[2]/a.hx - a.oy) + 1
+function add_smooth_inflow!(a, prob, xlim, ylim, v)
+    h, w = size(prob)
+    hh = 1.0 / h
+    hw = 1.0 / w
+    hx = gridsize(prob)
+    j1 = round(Int, xlim[1]/hw - a.ox) + 1
+    j2 = round(Int, xlim[2]/hw - a.ox) + 1
+    i1 = round(Int, ylim[1]/hh - a.oy) + 1
+    i2 = round(Int, ylim[2]/hh - a.oy) + 1
 
     Lj = xlim[2] - xlim[1]
     Li = ylim[2] - ylim[1]
     Cj = xlim[2] + xlim[1]
     Ci = ylim[2] + ylim[1]
-    for j in max(j1, 1):min(j2, size(a)[1])
-        for i in max(i1, 1):min(i2, size(a)[2])
+    for j in max(j1, 1):min(j2, w)
+        for i in max(i1, 1):min(i2, h)
             # Cubic pulse shape
             L = sqrt(
                 ((2hx*(i + 0.5) - Ci)/Li)^2 + 

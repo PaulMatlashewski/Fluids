@@ -2,6 +2,7 @@ import Base: size
 using FileIO, ImageMagick
 using LinearAlgebra, SparseArrays, SuiteSparse
 using Formatting, TimerOutputs
+using ProgressMeter: Progress, next!
 
 abstract type Integrator end
 struct Euler <: Integrator end
@@ -93,10 +94,13 @@ function euler!(a, grid_i, grid_j, prob)
     i = grid_i + oy
     j = grid_j + ox
 
-    i1 = linear_interp(v, i, j) / hx * dt
-    j1 = linear_interp(u, i, j) / hx * dt
+    u1 = linear_interp(u, i, j) / hx
+    v1 = linear_interp(v, i, j) / hx
 
-    a.dst[grid_i, grid_j] = a(i - i1, j - j1)
+    i1 = i - v1 * dt
+    j1 = j - u1 * dt
+
+    a.dst[grid_i, grid_j] = a(i1, j1)
 end
 
 # RungeKutta3 integration
@@ -113,20 +117,20 @@ function rk3!(a, grid_i, grid_j, prob)
     u1 = linear_interp(u, i, j) / hx
     v1 = linear_interp(v, i, j) / hx
 
-    i1 = i - 0.5 * dt * v1
-    j1 = j - 0.5 * dt * u1
+    i1 = i - 0.5 * v1 * dt
+    j1 = j - 0.5 * u1 * dt
 
     u2 = linear_interp(u, i1, j1) / hx
     v2 = linear_interp(v, i1, j1) / hx
 
-    i2 = i - 0.75 * dt * v2
-    j2 = j - 0.75 * dt * u2
+    i2 = i - 0.75 * v2 * dt
+    j2 = j - 0.75 * u2 * dt
 
-    u3 = linear_interp(u, i2, j2)
-    v3 = linear_interp(v, i2, j2)
+    u3 = linear_interp(u, i2, j2) / hx
+    v3 = linear_interp(v, i2, j2) / hx
 
-    i3 = i - (2v1 + 3v2 + 4v3)*dt/9.0
-    j3 = j - (2u1 + 3u2 + 4u3)*dt/9.0
+    i3 = i - (2v1 + 3v2 + 4v3) / 9.0 * dt
+    j3 = j - (2u1 + 3u2 + 4u3) / 9.0 * dt
 
     a.dst[grid_i, grid_j] = a(i3, j3)
 end
@@ -141,7 +145,7 @@ end
 
 function advect!(a::FluidValue, prob::FluidSolver)
     h, w = size(a)
-    for j in 1:w
+    Threads.@threads for j in 1:w
         for i in 1:h
             integrate!(a, i, j, prob)
         end
@@ -207,7 +211,7 @@ function vorticity_confinement!(prob, ϵ)
     h, w = size(prob)
     dt = prob.dt
     hx = gridsize(prob)
-    for j in 1:w-1
+    Threads.@threads for j in 1:w-1
         for i in 1:h-1
             ω = vorticity(prob, i, j)
             ωi = vorticity(prob, i+1, j)
@@ -219,8 +223,8 @@ function vorticity_confinement!(prob, ϵ)
             L = sqrt(∂ωi^2 + ∂ωj^2) + (1e-20/hx/dt) # Prevent divide by 0
 
             # Force to increase vorticity: f = (ω × N)dt
-            fi[i, j] -= ϵ * dt * (ω * ∂ωj/L)
-            fj[i, j] += ϵ * dt * (ω * ∂ωi/L)
+            fi[i, j] -= ϵ * dt * hx * (ω * ∂ωj/L)
+            fj[i, j] += ϵ * dt * hx * (ω * ∂ωi/L)
         end
     end
 end
@@ -248,36 +252,12 @@ function apply_bc!(prob)
         u[i, 1] = bc
         u[i, w] = bc
         u[i, w + 1] = bc
-        v[i, 1] = bc
-        v[i, w] = bc
-        v[i, w + 1] = bc
     end
     for j in 1:w+1
-        u[1, j] = bc
-        u[h, j] = bc
-        u[h + 1, j] = bc
         v[1, j] = bc
         v[h, j] = bc
         v[h + 1, j] = bc
     end
-end
-
-# CFL condition for maximum timestep
-function max_dt(prob)
-    w, h = size(prob)
-    hx = gridsize(prob)
-    # Maximum velocity at center of grid
-    max_velocity = 0.0
-    for j in 1:w
-        for i in 1:h
-            u = prob.u(i + 0.5, j + 0.5)
-            v = prob.v(i + 0.5, j + 0.5)
-            velocity = sqrt(u^2 + v^2)
-            max_velocity = max(max_velocity, velocity)
-        end
-    end
-    dt = 2.0 * hx / max_velocity
-    return min(dt, 1.0) # Clamp to a resonable value for small velocities
 end
 
 function update!(prob, to)
@@ -299,7 +279,7 @@ function update!(prob, to)
 
     # Body force step
     @timeit to "Vorticity Confinement" begin
-        vorticity_confinement!(prob, 0.1)
+        vorticity_confinement!(prob, 10.0)
         apply_bodyforces!(prob)
         fill!(prob.fi, 0.0)
         fill!(prob.fj, 0.0)
@@ -307,32 +287,31 @@ function update!(prob, to)
 end
 
 function solve(prob, filename, fps)
-    to = TimerOutput()
     d, u, v = prob.d, prob.u, prob.v
-
     dt = prob.dt
     tmax = prob.tmax
     t = 0.0
     n = floor(Int, tmax / dt)
     h, w = size(prob)
     data = zeros(eltype(d), h, w, n)
-
     dt = prob.dt
     tmax = prob.tmax
     t = 0.0
-    for k in 1:n    
+
+    to = TimerOutput()
+    p = Progress(n, dt, "Solving: ", 50, :white)
+    
+    for k in 1:n
         # Add inflow conditions
-        add_inflow!(d, [0.45, 0.55], [0.0, 0.01], 1.0)
-        add_inflow!(u, [0.45, 0.55], [0.0, 0.01], 0.0)
-        add_inflow!(v, [0.45, 0.55], [0.0, 0.01], 3.0)
+        add_smooth_inflow!(d, prob, [0.45, 0.55], [0.1, 0.11], 1.0)
+        add_smooth_inflow!(v, prob, [0.45, 0.55], [0.1, 0.11], 3.0)
+        add_smooth_inflow!(d, prob, [0.45, 0.55], [0.89, 0.9], 1.0)
+        add_smooth_inflow!(v, prob, [0.45, 0.55], [0.89, 0.9], -3.0)
 
-        printfmtln("Solving time t: {:.3f}", t)
         update!(prob, to)
-
-        # Save result
-        data[:, :, k] .= prob.d.src
-
+        data[:, :, k] .= max.(min.(prob.d.src, 1.0), 0.0)
         t += dt
+        next!(p)
     end
     println(to)
     println("Saving gif")

@@ -303,10 +303,10 @@ function solve(prob, filename, fps)
     
     for k in 1:n
         # Add inflow conditions
-        add_smooth_inflow!(d, prob, [0.45, 0.55], [0.1, 0.11], 1.0)
-        add_smooth_inflow!(v, prob, [0.45, 0.55], [0.1, 0.11], 3.0)
-        add_smooth_inflow!(d, prob, [0.45, 0.55], [0.89, 0.9], 1.0)
-        add_smooth_inflow!(v, prob, [0.45, 0.55], [0.89, 0.9], -3.0)
+        add_smooth_inflow!(d, prob, [0.45, 0.55], 0.05, 2.0)
+        add_smooth_inflow!(d, prob, [0.45, 0.55], 0.95, 2.0)
+        add_smooth_inflow!(v, prob, [0.45, 0.55], 0.05, 6.0)
+        add_smooth_inflow!(v, prob, [0.45, 0.55], 0.95, -6.0)
 
         update!(prob, to)
         data[:, :, k] .= max.(min.(prob.d.src, 1.0), 0.0)

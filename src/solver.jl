@@ -1,5 +1,5 @@
 import Base: size
-using FileIO, ImageMagick
+import Makie, ColorSchemes
 using LinearAlgebra, SparseArrays, SuiteSparse
 using Formatting, TimerOutputs
 using ProgressMeter: Progress, next!
@@ -279,41 +279,42 @@ function update!(prob, to)
 
     # Body force step
     @timeit to "Vorticity Confinement" begin
-        vorticity_confinement!(prob, 10.0)
+        vorticity_confinement!(prob, 5.0)
         apply_bodyforces!(prob)
         fill!(prob.fi, 0.0)
         fill!(prob.fj, 0.0)
     end
 end
 
-function solve(prob, filename, fps)
+function solve(prob)
     d, u, v = prob.d, prob.u, prob.v
     dt = prob.dt
     tmax = prob.tmax
     t = 0.0
     n = floor(Int, tmax / dt)
     h, w = size(prob)
-    data = zeros(eltype(d), h, w, n)
     dt = prob.dt
     tmax = prob.tmax
     t = 0.0
 
     to = TimerOutput()
     p = Progress(n, dt, "Solving: ", 50, :white)
-    
+    scene = Makie.Scene(resolution=(h, w))
+    data = Makie.Node(prob.d.src)
+    Makie.heatmap!(scene, data, show_axis=false,
+                   colormap=ColorSchemes.ice.colors, colorrange=(0.0,1.0))
+    display(scene)
     for k in 1:n
         # Add inflow conditions
         add_smooth_inflow!(d, prob, [0.45, 0.55], 0.05, 2.0)
         add_smooth_inflow!(d, prob, [0.45, 0.55], 0.95, 2.0)
-        add_smooth_inflow!(v, prob, [0.45, 0.55], 0.05, 6.0)
-        add_smooth_inflow!(v, prob, [0.45, 0.55], 0.95, -6.0)
+        add_smooth_inflow!(v, prob, [0.45, 0.55], 0.05, 3.0)
+        add_smooth_inflow!(v, prob, [0.45, 0.55], 0.95, -3.0)
 
         update!(prob, to)
-        data[:, :, k] .= max.(min.(prob.d.src, 1.0), 0.0)
+        data[] = prob.d.src
         t += dt
         next!(p)
     end
     println(to)
-    println("Saving gif")
-    save(filename, data; fps=fps)
 end

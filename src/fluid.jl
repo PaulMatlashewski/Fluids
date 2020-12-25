@@ -160,8 +160,8 @@ function add_smooth_inflow!(a, prob, xlim, y, v)
     for j in max(j1, 1):min(j2, w)
         x = 2 * (j - jc) / L
         vi = v * exp(-1/(1 - x^2))
-        if abs(a[i, j]) < abs(vi)
-            a[i, j] = vi
-        end
+        # if abs(a[i, j]) < abs(vi)
+        a[i, j] = vi
+        # end
     end
 end

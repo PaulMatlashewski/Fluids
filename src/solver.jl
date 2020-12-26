@@ -286,7 +286,7 @@ function update!(prob, to)
     end
 end
 
-function solve(prob)
+function solve(prob, file)
     d, u, v = prob.d, prob.u, prob.v
     dt = prob.dt
     tmax = prob.tmax
@@ -299,17 +299,16 @@ function solve(prob)
 
     to = TimerOutput()
     p = Progress(n, dt, "Solving: ", 50, :white)
-    scene = Makie.Scene(resolution=(h, w))
     data = Makie.Node(prob.d.src)
-    Makie.heatmap!(scene, data, show_axis=false,
+    scene = Makie.heatmap(data, show_axis=false, resolution=(w,h),
                    colormap=ColorSchemes.ice.colors, colorrange=(0.0,1.0))
     display(scene)
-    for k in 1:n
+    Makie.record(scene, file, 1:n; framerate=30, compression=0) do k
         # Add inflow conditions
-        add_smooth_inflow!(d, prob, [0.45, 0.55], 0.05, 2.0)
-        add_smooth_inflow!(d, prob, [0.45, 0.55], 0.95, 2.0)
-        add_smooth_inflow!(v, prob, [0.45, 0.55], 0.05, 3.0)
-        add_smooth_inflow!(v, prob, [0.45, 0.55], 0.95, -3.0)
+        add_smooth_inflow!(d, prob, [0.45, 0.55], 0.25, 2.0)
+        add_smooth_inflow!(d, prob, [0.45, 0.55], 0.75, 2.0)
+        add_smooth_inflow!(v, prob, [0.45, 0.55], 0.25, 3.0)
+        add_smooth_inflow!(v, prob, [0.45, 0.55], 0.75, -3.0)
 
         update!(prob, to)
         data[] = prob.d.src
